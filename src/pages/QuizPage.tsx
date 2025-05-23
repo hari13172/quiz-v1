@@ -5,8 +5,7 @@ import { useNavigate, useLocation } from "react-router-dom"
 import { Clock, ChevronLeft, ChevronRight } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
-import { RadioGroup } from "@/components/ui/radio-group"
-import { RadioGroupItem } from "@/components/ui/radio-group"
+import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group"
 import { Label } from "@/components/ui/label"
 import QuestionNavigation from "../components/navigation/QuestionNavigation"
 import QuestionStatusLegend from "../components/navigation/QuestionStatusLegend"
@@ -15,7 +14,6 @@ import { questions } from "../data/questions"
 import { FullScreenManager } from "../components/proctoring/FullScreenManager"
 import Proctoring from "../components/proctoring/Proctoring"
 
-// Question types
 type QuestionType = "multiple-choice" | "fill-in-blank" | "true-false" | "image-based"
 
 interface Option {
@@ -49,6 +47,7 @@ export default function QuizPage() {
 
     useEffect(() => {
         if (!studentName || !regNumber) {
+            console.log("[QuizPage] Missing studentName or regNumber, redirecting to root")
             navigate("/")
             return
         }
@@ -67,6 +66,7 @@ export default function QuizPage() {
             setTimeRemaining((prev) => {
                 if (prev <= 0) {
                     clearInterval(timer)
+                    console.log("[QuizPage] Timer expired, terminating test")
                     handleTestTermination("Time is up.")
                     return 0
                 }
@@ -78,8 +78,9 @@ export default function QuizPage() {
     }, [])
 
     const handleTestTermination = (reason: string) => {
+        console.log(`[QuizPage] Test terminated: ${reason}`)
         setIsTestTerminated(true)
-        navigate(`/results?name=${encodeURIComponent(studentName)}®Number=${encodeURIComponent(regNumber)}&terminated=true&reason=${encodeURIComponent(reason)}`)
+        navigate(`/results?name=${encodeURIComponent(studentName)}&regNumber=${encodeURIComponent(regNumber)}&terminated=true&reason=${encodeURIComponent(reason)}`)
     }
 
     const handleAnswerChange = (value: string) => {
@@ -134,7 +135,8 @@ export default function QuizPage() {
     }
 
     const handleSubmit = () => {
-        navigate(`/results?name=${encodeURIComponent(studentName)}®Number=${encodeURIComponent(regNumber)}`)
+        console.log("[QuizPage] Test submitted manually")
+        navigate(`/results?name=${encodeURIComponent(studentName)}&regNumber=${encodeURIComponent(regNumber)}`)
     }
 
     if (isLoading) {

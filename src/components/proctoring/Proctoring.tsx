@@ -1,10 +1,11 @@
+
 "use client"
 
 import React, { useRef, useEffect, useState, useCallback } from "react"
 import * as tf from "@tensorflow/tfjs"
 import * as faceDetection from "@tensorflow-models/face-detection"
 import { toast } from "sonner"
-import { VoiceDetection } from "./VoiceDetection"
+import VoiceDetection from "./VoiceDetection"
 import {
     AlertDialog,
     AlertDialogContent,
@@ -42,16 +43,15 @@ const Proctoring: React.FC<ProctoringProps> = ({ active, onTestTermination }) =>
     const [lastMultipleFacesWarning, setLastMultipleFacesWarning] = useState<number>(0)
     const [lastTabSwitchWarning, setLastTabSwitchWarning] = useState<number>(0)
     const [lastHeadTurnWarning, setLastHeadTurnWarning] = useState<number>(0)
-    const NO_FACE_TIMEOUT: number = 1000
-    const WARNING_INTERVAL: number = 1000
-    const HEAD_TURN_THRESHOLD: number = 0.1
-    const VIOLATION_LIMIT: number = 5
-    const POPUP_LIMIT: number = 3
+    const NO_FACE_TIMEOUT: number = 2000
+    const WARNING_INTERVAL: number = 2000
+    const HEAD_TURN_THRESHOLD: number = 0.15
+    const VIOLATION_LIMIT: number = 10 // Number of violations to trigger a popup
+    const POPUP_LIMIT: number = 3 // Three chances before termination
 
     const stopStream = () => {
         if (stream) {
-            const tracks = stream.getTracks()
-            tracks.forEach((track) => track.stop())
+            stream.getTracks().forEach((track) => track.stop())
             console.log("[Proctoring] Webcam stream stopped.")
             setStream(null)
         }
@@ -110,8 +110,7 @@ const Proctoring: React.FC<ProctoringProps> = ({ active, onTestTermination }) =>
                     }
                 }
             } catch (err: unknown) {
-                const error = err as Error
-                console.error("[Proctoring] Setup failed:", error.message)
+                console.error("[Proctoring] Setup failed:", (err as Error).message)
                 toast.error("Proctoring Setup Failed", {
                     description: "Unable to access webcam or microphone. Please allow access.",
                 })
@@ -141,8 +140,6 @@ const Proctoring: React.FC<ProctoringProps> = ({ active, onTestTermination }) =>
         const faceWidth = Math.abs(leftEye.x - rightEye.x)
         const normalizedNosePosition = (noseTip.x - faceCenterX) / faceWidth
 
-        console.log("[Proctoring] Keypoints:", { noseTipX: noseTip.x, leftEyeX: leftEye.x, rightEyeX: rightEye.x })
-        console.log("[Proctoring] Face Center X:", faceCenterX, "Face Width:", faceWidth)
         console.log("[Proctoring] Normalized nose position:", normalizedNosePosition)
 
         if (normalizedNosePosition > HEAD_TURN_THRESHOLD) {
@@ -159,7 +156,7 @@ const Proctoring: React.FC<ProctoringProps> = ({ active, onTestTermination }) =>
             const currentTime = Date.now()
 
             if (faces.length === 0) {
-                console.log("[Proctoring] No face detected at:", new Date().toISOString())
+                console.log("[Proctoring] No face detected")
                 if (!lastNoFaceTime) {
                     setLastNoFaceTime(currentTime)
                 } else if (currentTime - lastNoFaceTime >= NO_FACE_TIMEOUT) {
@@ -167,7 +164,7 @@ const Proctoring: React.FC<ProctoringProps> = ({ active, onTestTermination }) =>
                         const newCount = prev + 1
                         console.log(`[Proctoring] No face violation count: ${newCount}`)
                         if (currentTime - lastNoFaceWarning >= WARNING_INTERVAL) {
-                            toast.warning(`No face detected (${newCount})`, {
+                            toast.warning(`No face detected (${newCount}/${VIOLATION_LIMIT})`, {
                                 description: "Please stay in the camera view.",
                             })
                             setLastNoFaceWarning(currentTime)
@@ -185,12 +182,12 @@ const Proctoring: React.FC<ProctoringProps> = ({ active, onTestTermination }) =>
                 }
                 setHeadDirection("straight")
             } else if (faces.length > 1) {
-                console.log("[Proctoring] Multiple faces detected:", faces)
+                console.log("[Proctoring] Multiple faces detected:", faces.length)
                 setNoFaceCount((prev) => {
                     const newCount = prev + 1
                     console.log(`[Proctoring] Multiple faces violation count: ${newCount}`)
                     if (currentTime - lastMultipleFacesWarning >= WARNING_INTERVAL) {
-                        toast.warning(`Multiple faces detected (${newCount})`, {
+                        toast.warning(`Multiple faces detected (${newCount}/${VIOLATION_LIMIT})`, {
                             description: "Only one person is allowed during the test.",
                         })
                         setLastMultipleFacesWarning(currentTime)
@@ -216,7 +213,7 @@ const Proctoring: React.FC<ProctoringProps> = ({ active, onTestTermination }) =>
                 setHeadDirection(direction)
 
                 if (direction !== "straight" && currentTime - lastHeadTurnWarning >= WARNING_INTERVAL) {
-                    toast.warning(`Head turned ${direction}`, {
+                    toast.warning(`Head turned ${direction} (${violationCount + 1}/${VIOLATION_LIMIT})`, {
                         description: "Please face the camera directly.",
                     })
                     setLastHeadTurnWarning(currentTime)
@@ -236,14 +233,7 @@ const Proctoring: React.FC<ProctoringProps> = ({ active, onTestTermination }) =>
 
     useEffect(() => {
         if (!isProctoring || !active || !detector) {
-            console.log(
-                "[Proctoring] Face detection skipped: isProctoring =",
-                isProctoring,
-                "active =",
-                active,
-                "detector =",
-                detector
-            )
+            console.log("[Proctoring] Face detection skipped: isProctoring =", isProctoring, "active =", active)
             return
         }
 
@@ -261,11 +251,10 @@ const Proctoring: React.FC<ProctoringProps> = ({ active, onTestTermination }) =>
                 const faces: Face[] = await detector.estimateFaces(videoRef.current, {
                     flipHorizontal: false,
                 })
-                console.log("[Proctoring] Faces detected:", faces)
+                console.log("[Proctoring] Faces detected:", faces.length)
                 processFaces(faces, lastNoFaceTime, (newTime) => (lastNoFaceTime = newTime))
             } catch (err: unknown) {
-                const error = err as Error
-                console.error("[Proctoring] Face detection error:", error.message)
+                console.error("[Proctoring] Face detection error:", (err as Error).message)
             }
 
             if (isMounted) {
@@ -289,16 +278,24 @@ const Proctoring: React.FC<ProctoringProps> = ({ active, onTestTermination }) =>
         }
 
         const handleBlur = () => {
-            console.log("[Proctoring] Tab switch detected at:", new Date().toISOString())
+            console.log("[Proctoring] Tab switch or window blur detected")
             setTabSwitchCount((prev) => {
                 const newCount = prev + 1
                 console.log(`[Proctoring] Tab switch violation count: ${newCount}`)
                 const currentTime = Date.now()
                 if (currentTime - lastTabSwitchWarning >= WARNING_INTERVAL) {
-                    toast.warning(`Tab switch detected (${newCount})`, {
+                    toast.warning(`Tab switch detected (${newCount}/${VIOLATION_LIMIT})`, {
                         description: "Switching tabs is not allowed during the test.",
                     })
                     setLastTabSwitchWarning(currentTime)
+                    setViolationCount((prev) => {
+                        const newViolationCount = prev + 1
+                        if (newViolationCount >= VIOLATION_LIMIT && !isWarningPopupOpen) {
+                            setIsWarningPopupOpen(true)
+                            setPopupCount((prev) => prev + 1)
+                        }
+                        return newViolationCount
+                    })
                 }
                 return newCount
             })
@@ -314,8 +311,9 @@ const Proctoring: React.FC<ProctoringProps> = ({ active, onTestTermination }) =>
 
     const handleCloseWarningPopup = () => {
         setIsWarningPopupOpen(false)
-        setViolationCount(0)
+        setViolationCount(0) // Reset violation count after popup
         if (popupCount >= POPUP_LIMIT) {
+            console.log("[Proctoring] Popup limit reached, terminating test")
             stopStream()
             onTestTermination("Test terminated due to repeated proctoring violations.")
         }
@@ -340,11 +338,11 @@ const Proctoring: React.FC<ProctoringProps> = ({ active, onTestTermination }) =>
                             Proctoring Warning {popupCount}/{POPUP_LIMIT}
                         </AlertDialogTitle>
                         <AlertDialogDescription className="text-gray-300">
-                            You have been detected not facing the camera multiple times. During the test, you must face the camera directly to comply with proctoring rules.
+                            You have been detected not facing the camera or switching tabs multiple times. Please comply with proctoring rules.
                             {popupCount >= POPUP_LIMIT ? (
                                 <p className="mt-2 font-bold text-red-400">This is your final warning. The test will now be terminated.</p>
                             ) : (
-                                <p className="mt-2">Repeated violations may lead to test termination.</p>
+                                <p className="mt-2">You have {POPUP_LIMIT - popupCount} chance(s) remaining before test termination.</p>
                             )}
                         </AlertDialogDescription>
                     </AlertDialogHeader>

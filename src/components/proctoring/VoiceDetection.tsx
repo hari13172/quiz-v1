@@ -1,137 +1,175 @@
+
 "use client"
 
-import { useState, useEffect, useRef } from "react"
+import React, { useEffect, useState, useRef } from "react"
 import { toast } from "sonner"
+import {
+    AlertDialog,
+    AlertDialogContent,
+    AlertDialogHeader,
+    AlertDialogTitle,
+    AlertDialogDescription,
+    AlertDialogFooter,
+    AlertDialogAction,
+} from "@/components/ui/alert-dialog"
 
 interface VoiceDetectionProps {
     active: boolean
-    threshold?: number // dB threshold for noise detection
-    onNoiseDetected?: (reason: string) => void // Callback for termination with reason
     stream: MediaStream | null
+    onNoiseDetected: (reason: string) => void
 }
 
-export function VoiceDetection({ active, threshold = -50, onNoiseDetected, }: VoiceDetectionProps) {
-    const [isMonitoring, setIsMonitoring] = useState(false)
-    const [violationCount, setViolationCount] = useState(0)
-    const [lastWarningTime, setLastWarningTime] = useState(0)
+const VoiceDetection: React.FC<VoiceDetectionProps> = ({ active, stream, onNoiseDetected }) => {
+    const [isAudioProcessing, setIsAudioProcessing] = useState<boolean>(false)
+    const [noiseCount, setNoiseCount] = useState<number>(0)
+    const [popupCount, setPopupCount] = useState<number>(0)
+    const [lastNoiseWarning, setLastNoiseWarning] = useState<number>(0)
+    const [isNoisePopupOpen, setIsNoisePopupOpen] = useState<boolean>(false)
     const audioContextRef = useRef<AudioContext | null>(null)
     const analyserRef = useRef<AnalyserNode | null>(null)
-    const streamRef = useRef<MediaStream | null>(null)
-    const rafRef = useRef<number | null>(null)
-    const VIOLATION_LIMIT = 3
-    const WARNING_COOLDOWN = 5000 // 5 seconds in milliseconds
+    const sourceRef = useRef<MediaStreamAudioSourceNode | null>(null)
+    const NOISE_THRESHOLD = 0.05 // Adjusted for typical speech levels
+    const WARNING_INTERVAL = 2000 // 2 seconds between toasts
+    const NOISE_VIOLATION_LIMIT = 5 // Number of noise detections to trigger a popup
+    const NOISE_POPUP_LIMIT = 3 // Three chances before termination
 
-    // Start audio monitoring
-    const startMonitoring = async () => {
-        try {
-            const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
-            streamRef.current = stream
-            console.log("[VoiceDetection] Audio tracks:", stream.getAudioTracks())
-
-            const audioContext = new AudioContext()
-            await audioContext.resume()
-            audioContextRef.current = audioContext
-
-            const source = audioContext.createMediaStreamSource(stream)
-            const analyser = audioContext.createAnalyser()
-            analyser.fftSize = 2048
-            analyserRef.current = analyser
-
-            source.connect(analyser)
-
-            setIsMonitoring(true)
-            monitorAudio()
-        } catch (error) {
-            console.error("[VoiceDetection] Error accessing microphone:", error)
-            toast.error("Microphone Access Denied", {
-                description: "Please allow microphone access to proceed with the test.",
-            })
-            onNoiseDetected?.("Microphone access denied.")
+    useEffect(() => {
+        if (!active || !stream) {
+            console.log("[VoiceDetection] Inactive or no stream, stopping audio processing...")
+            stopAudioProcessing()
+            return
         }
-    }
 
-    // Stop audio monitoring
-    const stopMonitoring = () => {
-        if (streamRef.current) {
-            streamRef.current.getTracks().forEach((track) => track.stop())
-            streamRef.current = null
+        const setupAudio = async () => {
+            try {
+                console.log("[VoiceDetection] Setting up audio processing...")
+                audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)()
+                analyserRef.current = audioContextRef.current.createAnalyser()
+                analyserRef.current.fftSize = 2048
+
+                sourceRef.current = audioContextRef.current.createMediaStreamSource(stream)
+                sourceRef.current.connect(analyserRef.current)
+
+                setIsAudioProcessing(true)
+                console.log("[VoiceDetection] Audio processing started.")
+            } catch (err: unknown) {
+                console.error("[VoiceDetection] Audio setup failed:", (err as Error).message)
+                toast.error("Audio Proctoring Failed", {
+                    description: "Unable to access microphone for proctoring.",
+                })
+            }
+        }
+
+        setupAudio()
+
+        return () => {
+            console.log("[VoiceDetection] Cleaning up audio processing...")
+            stopAudioProcessing()
+        }
+    }, [active, stream])
+
+    const stopAudioProcessing = () => {
+        if (sourceRef.current) {
+            sourceRef.current.disconnect()
+            sourceRef.current = null
         }
         if (audioContextRef.current) {
             audioContextRef.current.close()
             audioContextRef.current = null
         }
-        if (rafRef.current) {
-            cancelAnimationFrame(rafRef.current)
-            rafRef.current = null
-        }
-        setIsMonitoring(false)
-        setViolationCount(0)
-        setLastWarningTime(0)
-    }
-
-    // Monitor audio levels
-    const monitorAudio = () => {
-        if (!analyserRef.current || !isMonitoring) return
-
-        const dataArray = new Float32Array(analyserRef.current.fftSize)
-        analyserRef.current.getFloatTimeDomainData(dataArray)
-
-        // Calculate RMS (Root Mean Square) to estimate volume
-        let sum = 0
-        for (let i = 0; i < dataArray.length; i++) {
-            sum += dataArray[i] * dataArray[i]
-        }
-        const rms = Math.sqrt(sum / dataArray.length)
-
-        // Convert RMS to dB
-        const db = 20 * Math.log10(rms + 0.00001) // Avoid log(0)
-        console.log(`[VoiceDetection] Audio level: ${db.toFixed(2)} dB`)
-
-        // Check if noise exceeds threshold
-        const currentTime = Date.now()
-        if (db > threshold && currentTime - lastWarningTime >= WARNING_COOLDOWN) {
-            setViolationCount((prev) => {
-                const newCount = prev + 1
-                console.log(`[VoiceDetection] Noise violation ${newCount}/${VIOLATION_LIMIT}: ${db.toFixed(2)} dB`)
-
-                if (newCount <= VIOLATION_LIMIT) {
-                    toast.warning(`Background Noise Detected (${newCount}/${VIOLATION_LIMIT})`, {
-                        description:
-                            newCount < VIOLATION_LIMIT
-                                ? "Excessive noise detected. Please keep your environment quiet."
-                                : "Final warning: Further noise will terminate the test.",
-                    })
-                    setLastWarningTime(currentTime)
-                }
-
-                if (newCount >= VIOLATION_LIMIT) {
-                    toast.error("Test Terminated", {
-                        description: "Excessive background noise detected multiple times.",
-                    })
-                    onNoiseDetected?.("Excessive background noise detected after multiple warnings.")
-                    stopMonitoring()
-                    return prev // Avoid updating state after termination
-                }
-
-                return newCount
-            })
-        }
-
-        // Continue monitoring
-        rafRef.current = requestAnimationFrame(monitorAudio)
+        setIsAudioProcessing(false)
     }
 
     useEffect(() => {
-        if (active) {
-            startMonitoring()
-        } else {
-            stopMonitoring()
+        if (!isAudioProcessing || !analyserRef.current) {
+            console.log("[VoiceDetection] Audio processing not ready, skipping...")
+            return
         }
+
+        let isMounted = true
+        const bufferLength = analyserRef.current.frequencyBinCount
+        const dataArray = new Float32Array(bufferLength)
+
+        const detectNoise = () => {
+            if (!isMounted || !analyserRef.current) return
+
+            analyserRef.current.getFloatTimeDomainData(dataArray)
+
+            let sum = 0
+            for (let i = 0; i < bufferLength; i++) {
+                sum += dataArray[i] * dataArray[i]
+            }
+            const rms = Math.sqrt(sum / bufferLength)
+            console.log("[VoiceDetection] RMS Audio Level:", rms)
+
+            if (rms > NOISE_THRESHOLD) {
+                const currentTime = Date.now()
+                setNoiseCount((prev) => {
+                    const newCount = prev + 1
+                    console.log(`[VoiceDetection] Noise detected, count: ${newCount}`)
+                    if (currentTime - lastNoiseWarning >= WARNING_INTERVAL) {
+                        toast.warning(`Noise detected (${newCount}/${NOISE_VIOLATION_LIMIT})`, {
+                            description: "Please maintain silence during the test.",
+                        })
+                        setLastNoiseWarning(currentTime)
+                        if (newCount >= NOISE_VIOLATION_LIMIT && !isNoisePopupOpen) {
+                            setIsNoisePopupOpen(true)
+                            setPopupCount((prev) => prev + 1)
+                        }
+                    }
+                    return newCount
+                })
+            }
+
+            requestAnimationFrame(detectNoise)
+        }
+
+        console.log("[VoiceDetection] Starting noise detection loop...")
+        detectNoise()
 
         return () => {
-            stopMonitoring()
+            isMounted = false
+            console.log("[VoiceDetection] Noise detection loop stopped.")
         }
-    }, [active])
+    }, [isAudioProcessing, lastNoiseWarning])
 
-    return null
+    const handleCloseNoisePopup = () => {
+        setIsNoisePopupOpen(false)
+        setNoiseCount(0) // Reset noise count after popup
+        if (popupCount >= NOISE_POPUP_LIMIT) {
+            console.log("[VoiceDetection] Noise popup limit reached, terminating test")
+            stopAudioProcessing()
+            onNoiseDetected("Test terminated due to excessive noise detections.")
+        }
+    }
+
+    return (
+        <AlertDialog open={isNoisePopupOpen} onOpenChange={setIsNoisePopupOpen}>
+            <AlertDialogContent className="bg-[#1e1e2e] text-white border-gray-700">
+                <AlertDialogHeader>
+                    <AlertDialogTitle className="flex items-center gap-2">
+                        <svg className="h-5 w-5 text-yellow-500" fill="currentColor" viewBox="0 0 20 20">
+                            <path d="M10 18a8 8 0 100-16 8 8 0 000 16zM11 7v4H9V7h2zm0 6v2H9v-2h2z" />
+                        </svg>
+                        Noise Detection Warning {popupCount}/{NOISE_POPUP_LIMIT}
+                    </AlertDialogTitle>
+                    <AlertDialogDescription className="text-gray-300">
+                        Excessive noise has been detected. Please maintain silence during the test.
+                        {popupCount >= NOISE_POPUP_LIMIT ? (
+                            <p className="mt-2 font-bold text-red-400">This is your final warning. The test will now be terminated.</p>
+                        ) : (
+                            <p className="mt-2">You have {NOISE_POPUP_LIMIT - popupCount} chance(s) remaining before test termination.</p>
+                        )}
+                    </AlertDialogDescription>
+                </AlertDialogHeader>
+                <AlertDialogFooter>
+                    <AlertDialogAction onClick={handleCloseNoisePopup} className="bg-purple-500 hover:bg-purple-600">
+                        {popupCount >= NOISE_POPUP_LIMIT ? "Close and Terminate" : "Understood"}
+                    </AlertDialogAction>
+                </AlertDialogFooter>
+            </AlertDialogContent>
+        </AlertDialog>
+    )
 }
+
+export default VoiceDetection
